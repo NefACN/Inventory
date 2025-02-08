@@ -54,7 +54,7 @@ function salesDetails(rows: DatabaseRow[]): Sale[] {
     return Array.from(salesMap.values());
 }
 
-// GET handler to fetch all sales
+// GET para obtener todas las ventas
 export async function GET() {
     const connection = await getConnection();
     try {
@@ -116,6 +116,7 @@ interface SaleInput {
     habilitado?: boolean; 
 }
 
+// POST para crear una nueva venta
 export async function POST(req: NextRequest) {
     const connection = await getConnection();
     await connection.query('BEGIN');
@@ -147,11 +148,10 @@ export async function POST(req: NextRequest) {
             sum + (item.cantidad * item.precio_unitario), 0
         );
 
-        // Insertar venta con estado_pago inicial en false
         // Insertar venta con habilitado inicial en true (no pagado)
             const ventaResult = await connection.query(
                 'INSERT INTO ventas (fechaventa, total, habilitado) VALUES ($1, $2, $3) RETURNING idventa',
-                [data.fechaventa || new Date(), total, true] // true significa no pagado
+                [data.fechaventa || new Date(), total, true] 
             );
         const idventa = ventaResult.rows[0].idventa;
 

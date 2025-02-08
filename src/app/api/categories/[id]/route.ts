@@ -4,7 +4,7 @@ import { getConnection } from "@/utils/database";
 export async function GET(req: NextRequest, {params}: {params: {id:string}}) {
     try{
         const connection = getConnection();
-        const {id}= params;
+        const {id}= await params;
         if (!id) {
             return NextResponse.json(
               { message: "ID is required." },
@@ -60,5 +60,51 @@ export async function PUT(req: NextRequest, context: { params: { id: string } })
     } catch (error) {
         console.error("Error al actualizar la categoría: ", error);
         return NextResponse.json({ message: "Error al actualizar la categoría" }, { status: 500 });
+    }
+}
+
+export async function DELETE(req: NextRequest, context: { params: { id: string } }) {
+    try {
+        const connection = await getConnection();
+        const { id } = await context.params;
+        const url = new URL(req.url);
+        const deleteType = url.searchParams.get('type') || 'logical';
+        const body = await req.json().catch(() => ({}));
+
+        if(body.type === 'restore'){
+            const restoreQuery = "UPDATE categorias SET habilitado = TRUE WHERE idcategoria = $1 RETURNING *";
+            const result = await connection.query(restoreQuery, [id]);
+
+            if ( result.rowCount === 0) {
+                return NextResponse.json({ message: "Categoría no encontrada" }, { status: 404 });
+            }
+
+            return NextResponse.json(result.rows[0]);
+        }
+        if ( deleteType === 'logical') {
+            const query = "UPDATE categorias SET habilitado = FALSE WHERE idcategoria = $1 RETURNING *";
+            const result = await connection.query(query, [id]);
+            if (result.rowCount === 0) {
+                return NextResponse.json({ message: "Categoría no encontrada" }, { status: 404 });
+            }
+            return NextResponse.json(result.rows[0]);
+        } else if (deleteType === 'physical') {
+            const query = "DELETE FROM categorias WHERE idcategoria = $1 RETURNING *";
+            const result = await connection.query(query, [id]);
+
+            if(result.rowCount === 0){
+                return NextResponse.json({ message: "Categoría no encontrada" }, { status: 404 });
+            }
+
+            return NextResponse.json({ message: "Categoría eliminada permanentemente", data: result.rows[0] });
+        } else {
+            return NextResponse.json(
+                { message: "Tipo de eliminación inválido. Use 'logical', 'physical', o 'restore'." },
+                { status: 400 }
+            );
+        }
+    } catch (error: unknown) {
+        console.error("Error procesando la categoría: ", error);
+        return NextResponse.json({ message: "Error interno del servidor" }, { status: 500 });
     }
 }

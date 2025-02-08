@@ -9,7 +9,8 @@ interface DatabaseRow {
     producto: string | null;
     cantidad: number;
     precio_unitario: string | number;
-    estado_pago: boolean;
+    habilitado: boolean;
+    stock: number;
 }
 
 interface SaleProduct {
@@ -24,7 +25,7 @@ interface Sale {
     idventa: number;
     fechaventa: Date;
     total: number;
-    estado_pago: boolean;
+    habilitado: boolean;
     productos: SaleProduct[];
 }
 
@@ -35,10 +36,8 @@ interface SaleUpdateInput {
         precio_unitario: number;
     }[];
     fechaventa?: Date;
-    estado_pago?: boolean;
 }
 
-// Función auxiliar para procesar los resultados de la base de datos
 function salesDetails(rows: DatabaseRow[]): Sale[] {
     const salesMap = new Map<number, Sale>();
 
@@ -47,8 +46,8 @@ function salesDetails(rows: DatabaseRow[]): Sale[] {
             salesMap.set(row.idventa, {
                 idventa: row.idventa,
                 fechaventa: row.fechaventa,
-                total: parseFloat(row.total.toString()) || 0,
-                estado_pago: row.estado_pago,
+                total: Number(row.total) || 0,
+                habilitado: row.habilitado, 
                 productos: []
             });
         }
@@ -59,8 +58,8 @@ function salesDetails(rows: DatabaseRow[]): Sale[] {
                 idproducto: row.idproducto,
                 nombre: row.producto || 'Sin nombre',
                 cantidad: row.cantidad,
-                precio_unitario: parseFloat(row.precio_unitario.toString()) || 0,
-                subtotal: row.cantidad * (parseFloat(row.precio_unitario.toString()) || 0)
+                precio_unitario: Number(row.precio_unitario) || 0,
+                subtotal: row.cantidad * (Number(row.precio_unitario) || 0)
             });
         }
     });
@@ -68,11 +67,16 @@ function salesDetails(rows: DatabaseRow[]): Sale[] {
     return Array.from(salesMap.values());
 }
 
-// GET - Obtener una venta específica
-export async function GET(
-    request: NextRequest,
-    { params }: { params: { id: string } }
-) {
+export async function GET(request: NextRequest, { params }: { params: { id: string } }): Promise<NextResponse> {
+    const {id} = await params;
+    const saleId = parseInt(id);
+    if (isNaN(saleId)) {
+        return NextResponse.json(
+            { error: 'ID de venta inválido' },
+            { status: 400 }
+        );
+    }
+
     const pool = await getConnection();
     const client = await pool.connect();
 
@@ -82,16 +86,17 @@ export async function GET(
                 v.idventa,
                 v.fechaventa,
                 v.total,
-                v.estado_pago,
+                v.habilitado,
                 vp.idproducto,
                 p.nombre as producto,
                 vp.cantidad,
-                vp.precio_unitario
+                vp.precio_unitario,
+                p.stock
             FROM ventas v
             JOIN ventas_productos vp ON v.idventa = vp.idventa
             JOIN productos p ON vp.idproducto = p.idproducto
-            WHERE v.idventa = $1 AND v.habilitado = TRUE
-        `, [params.id]);
+            WHERE v.idventa = $1
+        `, [saleId]);
 
         if (result.rows.length === 0) {
             return NextResponse.json(
@@ -101,7 +106,7 @@ export async function GET(
         }
 
         const sale = salesDetails(result.rows)[0];
-        return NextResponse.json(sale, { status: 200 });
+        return NextResponse.json(sale);
 
     } catch (error) {
         console.error('Error fetching sale:', error);
@@ -114,22 +119,37 @@ export async function GET(
     }
 }
 
-// PUT - Actualizar una venta existente
 export async function PUT(
     request: NextRequest,
     { params }: { params: { id: string } }
-) {
+): Promise<NextResponse> {
+    const { id } = await params;
+    const saleId = parseInt(id);
+    if (isNaN(saleId)) {
+        return NextResponse.json(
+            { error: 'ID de venta inválido' },
+            { status: 400 }
+        );
+    }
+
     const pool = await getConnection();
     const client = await pool.connect();
 
     try {
         const data: SaleUpdateInput = await request.json();
+        
+        if (!Array.isArray(data.productos) || data.productos.length === 0) {
+            return NextResponse.json(
+                { error: 'La venta debe contener al menos un producto' },
+                { status: 400 }
+            );
+        }
+
         await client.query('BEGIN');
 
-        // Verificar si la venta existe y obtener su estado actual
         const ventaExists = await client.query(
-            'SELECT idventa, estado_pago FROM ventas WHERE idventa = $1 AND habilitado = TRUE',
-            [params.id]
+            'SELECT idventa, habilitado FROM ventas WHERE idventa = $1',
+            [saleId]
         );
 
         if (ventaExists.rows.length === 0) {
@@ -139,24 +159,34 @@ export async function PUT(
             );
         }
 
-        // Mantener el estado de pago actual si no se proporciona uno nuevo
-        const estado_pago = data.estado_pago !== undefined ? data.estado_pago : ventaExists.rows[0].estado_pago;
+        if (!ventaExists.rows[0].habilitado) {
+            return NextResponse.json(
+                { error: 'No se puede modificar una venta que ya ha sido pagada' },
+                { status: 400 }
+            );
+        }
 
-        // 1. Restaurar el stock original
         const currentProducts = await client.query(
             'SELECT idproducto, cantidad FROM ventas_productos WHERE idventa = $1',
-            [params.id]
+            [saleId]
         );
 
         for (const producto of currentProducts.rows) {
             await client.query(
-                'UPDATE productos SET stock = stock + $1 WHERE idproducto = $2',
+                'UPDATE productos SET stock = stock + $1 WHERE idproducto = $2 AND habilitado = TRUE',
                 [producto.cantidad, producto.idproducto]
             );
         }
 
-        // 2. Verificar stock disponible para los nuevos productos
         for (const producto of data.productos) {
+            if (producto.cantidad <= 0) {
+                throw new Error(`La cantidad debe ser mayor a 0 para el producto ${producto.idproducto}`);
+            }
+
+            if (producto.precio_unitario <= 0) {
+                throw new Error(`El precio unitario debe ser mayor a 0 para el producto ${producto.idproducto}`);
+            }
+
             const stockResult = await client.query(
                 'SELECT stock FROM productos WHERE idproducto = $1 AND habilitado = TRUE',
                 [producto.idproducto]
@@ -171,28 +201,28 @@ export async function PUT(
             }
         }
 
-        // 3. Calcular el nuevo total
+        //----- Calcular el nuevo total]------
         const total = data.productos.reduce((sum, item) => 
             sum + (item.cantidad * item.precio_unitario), 0
         );
 
-        // 4. Actualizar la venta
+        //------- actualizar venta-----
         await client.query(
-            'UPDATE ventas SET fechaventa = $1, total = $2, estado_pago = $3 WHERE idventa = $4',
-            [data.fechaventa || new Date(), total, estado_pago, params.id]
+            'UPDATE ventas SET fechaventa = $1, total = $2 WHERE idventa = $3',
+            [data.fechaventa || new Date(), total, saleId]
         );
 
-        // 5. Eliminar productos anteriores
+        //-----eliminar productos previos de venta productos----------
         await client.query(
             'DELETE FROM ventas_productos WHERE idventa = $1',
-            [params.id]
+            [saleId]
         );
 
-        // 6. Insertar nuevos productos y actualizar stock
+        //===== insertar nuevo producto y actualizar stock ------
         for (const producto of data.productos) {
             await client.query(
                 'INSERT INTO ventas_productos (idventa, idproducto, cantidad, precio_unitario) VALUES ($1, $2, $3, $4)',
-                [params.id, producto.idproducto, producto.cantidad, producto.precio_unitario]
+                [saleId, producto.idproducto, producto.cantidad, producto.precio_unitario]
             );
 
             await client.query(
@@ -203,13 +233,13 @@ export async function PUT(
 
         await client.query('COMMIT');
 
-        // Obtener la venta actualizada
+        // Get obtener ventas actualizadas
         const updatedSale = await client.query(`
             SELECT 
                 v.idventa,
                 v.fechaventa,
                 v.total,
-                v.estado_pago,
+                v.habilitado,
                 vp.idproducto,
                 p.nombre as producto,
                 vp.cantidad,
@@ -218,7 +248,7 @@ export async function PUT(
             JOIN ventas_productos vp ON v.idventa = vp.idventa
             JOIN productos p ON vp.idproducto = p.idproducto
             WHERE v.idventa = $1
-        `, [params.id]);
+        `, [saleId]);
 
         return NextResponse.json(
             salesDetails(updatedSale.rows)[0],
@@ -237,21 +267,29 @@ export async function PUT(
     }
 }
 
-// DELETE - Deshabilitar una venta (soft delete)
+//----- Metodo delete --------------
 export async function DELETE(
     request: NextRequest,
     { params }: { params: { id: string } }
-) {
+): Promise<NextResponse> {
+    const { id } = await params;
+    const saleId = parseInt(id);
+    if (isNaN(saleId)) {
+        return NextResponse.json(
+            { error: 'ID de venta inválido' },
+            { status: 400 }
+        );
+    }
+
     const pool = await getConnection();
     const client = await pool.connect();
 
     try {
         await client.query('BEGIN');
-
-        // Verificar si la venta existe
+        //verificar si esta pagado o no
         const ventaExists = await client.query(
-            'SELECT idventa FROM ventas WHERE idventa = $1 AND habilitado = TRUE',
-            [params.id]
+            'SELECT habilitado FROM ventas WHERE idventa = $1',
+            [saleId]
         );
 
         if (ventaExists.rows.length === 0) {
@@ -261,24 +299,37 @@ export async function DELETE(
             );
         }
 
-        // Obtener productos de la venta para restaurar stock
+        if (!ventaExists.rows[0].habilitado) {
+            return NextResponse.json(
+                { error: 'No se puede eliminar una venta que ya ha sido pagada' },
+                { status: 400 }
+            );
+        }
+
+        // Get porductos ventas para restaurar el stock
         const productos = await client.query(
             'SELECT idproducto, cantidad FROM ventas_productos WHERE idventa = $1',
-            [params.id]
+            [saleId]
         );
 
-        // Restaurar stock
+        // restaurar el stock
         for (const producto of productos.rows) {
             await client.query(
-                'UPDATE productos SET stock = stock + $1 WHERE idproducto = $2',
+                'UPDATE productos SET stock = stock + $1 WHERE idproducto = $2 AND habilitado = TRUE',
                 [producto.cantidad, producto.idproducto]
             );
         }
 
-        // Deshabilitar la venta
+        //eliminar una venta de venta_productos
         await client.query(
-            'UPDATE ventas SET habilitado = FALSE WHERE idventa = $1',
-            [params.id]
+            'DELETE FROM ventas_productos WHERE idventa = $1',
+            [saleId]
+        );
+
+        //eliminar para ventas
+        await client.query(
+            'DELETE FROM ventas WHERE idventa = $1',
+            [saleId]
         );
 
         await client.query('COMMIT');
@@ -300,36 +351,57 @@ export async function DELETE(
     }
 }
 
+//------------PATCH - Actualizar el estado de pago de una venta-------------
 export async function PATCH(
     request: NextRequest,
     { params }: { params: { id: string } }
-) {
-    // Validar y convertir el ID
-    const saleId = parseInt(params.id);
+): Promise<NextResponse> {
+    const { id } = await params;
+    const saleId = parseInt(id);
     if (isNaN(saleId)) {
-        return NextResponse.json({ error: 'ID de venta inválido' }, { status: 400 });
+        return NextResponse.json(
+            { error: 'ID de venta inválido' },
+            { status: 400 }
+        );
     }
 
     const pool = await getConnection();
-    
+    const client = await pool.connect();
+
     try {
-        const { estado_pago } = await request.json();
-        
-        const result = await pool.query(
-            'UPDATE ventas SET habilitado = $1 WHERE idventa = $2 RETURNING *',
-            [estado_pago, saleId] // Usamos saleId en lugar de params.id
+        const { habilitado } = await request.json(); 
+
+        // Verificar si la venta existe
+        const ventaExists = await client.query(
+            'SELECT habilitado FROM ventas WHERE idventa = $1',
+            [saleId]
         );
 
-        if (result.rowCount === 0) {
-            return NextResponse.json({ error: 'Venta no encontrada' }, { status: 404 });
+        if (ventaExists.rows.length === 0) {
+            return NextResponse.json(
+                { error: 'Venta no encontrada' },
+                { status: 404 }
+            );
         }
+
+        // Actualizar al nuevo estado
+        await client.query(
+            'UPDATE ventas SET habilitado = $1 WHERE idventa = $2',
+            [habilitado, saleId]
+        );
 
         return NextResponse.json({ 
             success: true,
-            message: `Venta marcada como ${estado_pago ? 'no pagada' : 'pagada'}`
+            message: `Venta marcada como ${habilitado ? 'no pagada' : 'pagada'}`
         });
+        
     } catch (error) {
-        console.error('Error updating sale status:', error);
-        return NextResponse.json({ error: 'Error al actualizar el estado' }, { status: 500 });
+        console.error('Error updating sale payment status:', error);
+        return NextResponse.json(
+            { error: 'Error al actualizar el estado de pago' },
+            { status: 500 }
+        );
+    } finally {
+        client.release();
     }
 }

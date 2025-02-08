@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import debounce from 'lodash/debounce';
 import {
   Container,
   Typography,
@@ -17,8 +18,15 @@ import {
   DialogContent,
   DialogActions,
   TextField,
+  Box,
+  IconButton,
+  CircularProgress,
+  Snackbar,
+  Alert,
+  AlertColor
 } from '@mui/material';
-import { Add } from '@mui/icons-material';
+import { Add, Edit, Delete, Restore, DeleteForever } from '@mui/icons-material';
+import ClientLayout from "@/components/layouts/ClientLayout";
 
 interface Supplier {
   idproveedor: number;
@@ -28,202 +36,383 @@ interface Supplier {
   direccion: string;
 }
 
+interface SnackbarMessage {
+  message: string;
+  severity: AlertColor;
+}
+
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [open, setOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState<string>('');
   const [newSupplier, setNewSupplier] = useState<Omit<Supplier, 'idproveedor'>>({
-    nombre: '',
+    nombre: '',    
     contacto: '',
     telefono: '',
     direccion: '',
   });
+  const [showDisabled, setShowDisabled] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedSupplier, setSelectedSupplier] = useState<Partial<Supplier> | null>(null);
+  const [snackbar, setSnackbar] = useState<SnackbarMessage | null>(null);
 
-  // Listar proveedores
+  const handleSnackbarClose = () => {
+    setSnackbar(null);
+  };
+
+  const showMessage = (message: string, severity: AlertColor) => {
+    setSnackbar({ message, severity });
+  };
+
+  const fetchSuppliers = useCallback(
+    debounce(async (query: string) => {
+      setIsLoading(true);
+      const endpoint = showDisabled 
+        ? `/api/suppliers/disabled?q=${query}` 
+        : `/api/suppliers?q=${query}`;
+      
+      try {
+        const res = await fetch(endpoint);
+        if (!res.ok) throw new Error('Error al cargar proveedores');
+        const data: Supplier[] = await res.json(); 
+        setSuppliers(data);
+      } catch {
+        showMessage('Error al cargar los proveedores', 'error');
+      } finally {
+        setIsLoading(false);
+      }
+    }, 300),
+    [showDisabled]
+  );
+
   useEffect(() => {
-    fetch('/api/suppliers')
-      .then((res) => res.json())
-      .then((data) => setSuppliers(data));
-  }, []);
+    fetchSuppliers(searchTerm);
+    return () => fetchSuppliers.cancel();
+  }, [searchTerm, fetchSuppliers]);
 
-  // Handle Dialog Open/Close
-  const handleOpen = () => setOpen(true);
+  const handleOpen = () => {
+    setSelectedSupplier(null);
+    setOpen(true);
+  };
+
   const handleClose = () => {
     setOpen(false);
     resetForm();
   };
 
-  // Handle Form Change
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNewSupplier({ ...newSupplier, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setNewSupplier(prev => ({
+      ...prev, 
+      [name]: value || ''  
+    }));
   };
 
-  //resert form
-  const resetForm= () =>{
+  const resetForm = () => {
     setNewSupplier({
       nombre: '',
       contacto: '',
       telefono: '',
       direccion: '',
     });
+    setSelectedSupplier(null);
   };
-
-  //validation form
-  const isFormValid = () => {
-    return(
-      newSupplier.nombre
-    );
-  };
-
-
-  //------------Edit form-------------------
-  const [selectedSupplier, setSelectedSupplier] = useState<Partial<Supplier> | null>(null);
 
   const handleEdit = (supplier: Supplier) => {
+    setNewSupplier({
+      nombre: supplier.nombre || '',
+      contacto: supplier.contacto || '',
+      telefono: supplier.telefono || '',
+      direccion: supplier.direccion || '',
+    });
     setSelectedSupplier(supplier);
-    setNewSupplier(supplier);
     setOpen(true);
-  }
+  };
 
-  //---------DELETE PROVEEDORES --------------------
   const handleDelete = async (id: number) => {
-    if(!window.confirm("Estas seguro de que quieres eliminar esta proveedor?")){
-      return;
-    }
-    const response = await fetch(`/api/suppliers/${id}`, {method: "DELETE"});
+    try {
+      const response = await fetch(`/api/suppliers/${id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error();
 
-    if(response.ok){
-      setSuppliers(suppliers.filter((supplier) => supplier.idproveedor !== id));
-      alert("El proveedor fue eliminado correctamente.");
-    }
-    else{
-      alert("Error al eliminar proveedor.");
+      setSuppliers((prev) => prev.filter((supplier) => supplier.idproveedor !== id));
+      showMessage('Proveedor eliminado correctamente', 'success');
+    } catch {
+      showMessage('Error al eliminar el proveedor', 'error');
     }
   };
 
-  // Handle Proveedor Submit
-  const handleSubmit = async () => { 
-    if(selectedSupplier){
-      //----------------Update suppliers-----------------
-      const response = await fetch(`/api/suppliers/${selectedSupplier!.idproveedor}`, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json' },
-        body: JSON.stringify(newSupplier),
+  const handleRestore = async (id: number) => {
+    try {
+      const response = await fetch(`/api/suppliers/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'restore' }),
       });
 
-      if(response.ok){
-        const updateSupplier = await response.json();
-        setSuppliers(
-          suppliers.map((p) =>
-            p.idproveedor === updateSupplier.idproveedor ? updateSupplier: p
-          )
-        );
-        setSelectedSupplier(null);
-      }
-    }else{
-      if (!isFormValid()){
-        alert('Por favor ingrese los datos correspondientes en el formulario.');
-        return;
-      }
+      if (!response.ok) throw new Error();
       
-      const response = await fetch('/api/suppliers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSupplier),
-      });
-      if (response.ok) {
-        const addedSupplier = await response.json();
-        setSuppliers((prevSuppliers) => [...prevSuppliers, addedSupplier]);
-        handleClose();
-      }else{
-        alert('Error al agregar proveedor, intentelo nuevamente.');
-      }
+      setSuppliers((prev) => prev.filter((supplier) => supplier.idproveedor !== id));
+      showMessage('Proveedor restaurado correctamente', 'success');
+    } catch {
+      showMessage('Error al restaurar el proveedor', 'error');
     }
-    handleClose();
+  };
+
+  const handleDeletePermanently = async (id: number) => {
+    try {
+      const response = await fetch(`/api/suppliers/${id}?type=physical`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error();
+
+      showMessage('Proveedor eliminado permanentemente', 'success');
+      fetchSuppliers(searchTerm);
+    } catch {
+      showMessage('Error al eliminar el proveedor', 'error');
+    }
+  };
+
+  const handleSubmit = async () => { 
+    const trimmedSupplier = {
+      nombre: newSupplier.nombre.trim(),
+      contacto: newSupplier.contacto.trim(),
+      telefono: newSupplier.telefono.trim(),
+      direccion: newSupplier.direccion.trim()
+    };
+
+    if (!trimmedSupplier.nombre) {
+      showMessage('El nombre del proveedor es obligatorio', 'error');
+      return;
+    }
+
+    const isDuplicate = suppliers.some(
+      supplier => 
+        supplier.nombre.toLowerCase().trim() === trimmedSupplier.nombre.toLowerCase() && 
+        supplier.idproveedor !== selectedSupplier?.idproveedor
+    );
+
+    if (isDuplicate) {
+      showMessage('El proveedor ya existe', 'error');
+      return;
+    }
+
+    try {
+      if (selectedSupplier) {
+        const response = await fetch(`/api/suppliers/${selectedSupplier.idproveedor}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(trimmedSupplier),
+        });
+  
+        if (response.ok) {
+          const updatedSupplier = await response.json();
+          setSuppliers(prev =>
+            prev.map((p) => p.idproveedor === updatedSupplier.idproveedor ? updatedSupplier : p)
+          );
+          showMessage('Proveedor actualizado correctamente', 'success');
+          handleClose();
+        } else {
+          const errorData = await response.json();
+          showMessage(errorData.message || 'Error al actualizar proveedor', 'error');
+        }
+      } else {
+        const response = await fetch('/api/suppliers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(trimmedSupplier),
+        });
+  
+        if (response.ok) {
+          const addedSupplier = await response.json();
+          setSuppliers((prev) => [...prev, addedSupplier]);
+          showMessage('Proveedor agregado correctamente', 'success');
+          handleClose();
+        } else {
+          const errorData = await response.json();
+          showMessage(errorData.message || 'Error al agregar proveedor', 'error');
+        }
+      }
+    } catch {
+      showMessage('Ocurrió un error inesperado', 'error');
+    }
+  };
+
+  const toggleView = () => {
+    setShowDisabled((prev) => !prev);
+    setSuppliers([]); 
+    setSearchTerm(''); 
   };
 
   return (
-    <Container>
-      <Typography variant="h4" gutterBottom>
-        Gestión de proveedores
-      </Typography>
-      <Button variant="contained" startIcon={<Add />} onClick={handleOpen}>
-        Añadir Proveedor
-      </Button>
-      <TableContainer component={Paper} sx={{ marginTop: 2 }}>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Nombre</TableCell>
-              <TableCell>Contacto</TableCell>
-              <TableCell>Telefono</TableCell>
-              <TableCell>Direccion</TableCell>
-              <TableCell>Acciones</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {suppliers.map((supplier) => (
-              <TableRow key={supplier.idproveedor}>
-                <TableCell>{supplier.idproveedor}</TableCell>
-                <TableCell>{supplier.nombre}</TableCell>
-                <TableCell>{supplier.contacto}</TableCell>
-                <TableCell>{supplier.telefono}</TableCell>
-                <TableCell>{supplier.direccion}</TableCell>
-                <TableCell>
-                  <Button color="primary" onClick={() => handleEdit(supplier)}>Editar</Button>
-                  <Button color="error" onClick={() => handleDelete(supplier.idproveedor)}>Eliminar</Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-
-      {/* Dialog for Adding Suppliers */}
-      <Dialog open={open} onClose={handleClose}>
-        <DialogTitle>Añadir Proveedor</DialogTitle>
-        <DialogContent>
-          <TextField
-            label="Nombre"
-            name="nombre"
-            fullWidth
-            margin="dense"
-            value={newSupplier.nombre}
-            onChange={handleChange}
-            required
-          />
-          <TextField
-            label="Contacto"
-            name="contacto"
-            fullWidth
-            margin="dense"
-            value={newSupplier.contacto}
-            onChange={handleChange}
-          />
-          <TextField
-            label="Telefono"
-            name="telefono"
-            fullWidth
-            margin="dense"
-            value={newSupplier.telefono}
-            onChange={handleChange}
-          />
-          <TextField
-            label="Dirección"
-            name="direccion"
-            fullWidth
-            margin="dense"
-            value={newSupplier.direccion}
-            onChange={handleChange}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleClose}>Cancelar</Button>
-          <Button onClick={handleSubmit} variant="contained">
-            Guardar
+    <ClientLayout>
+      <Container>
+        <Typography variant="h4" gutterBottom>
+          Gestión de proveedores
+        </Typography>
+        <TextField 
+          label="Buscar proveedor..." 
+          fullWidth 
+          variant="outlined"
+          margin="normal"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+          <Button variant="outlined" color="primary" onClick={toggleView}>
+            {showDisabled ? 'Ver Habilitados' : 'Ver Inhabilitados'}
           </Button>
-        </DialogActions>
-      </Dialog>
-    </Container>
+          {!showDisabled && (
+            <Button variant="contained" startIcon={<Add />} onClick={handleOpen}>
+              Añadir Proveedor
+            </Button>
+          )}
+        </Box>
+
+        {isLoading ? (
+          <Box display="flex" justifyContent="center" my={4}>
+            <CircularProgress />
+          </Box>
+        ) : suppliers.length === 0 ? (
+          <Box display="flex" justifyContent="center" my={4}>
+            <Typography variant="h6" color="textSecondary">
+              {showDisabled 
+                ? 'No hay proveedores inhabilitados' 
+                : 'No hay proveedores disponibles'}
+            </Typography>
+          </Box>
+        ) : (
+          <TableContainer component={Paper}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>ID</TableCell>
+                  <TableCell>Nombre</TableCell>
+                  <TableCell>Contacto</TableCell>
+                  <TableCell>Teléfono</TableCell>
+                  <TableCell>Dirección</TableCell>
+                  <TableCell>Acciones</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {suppliers.map((supplier) => (
+                  <TableRow key={supplier.idproveedor}>
+                    <TableCell>{supplier.idproveedor}</TableCell>
+                    <TableCell>{supplier.nombre}</TableCell>
+                    <TableCell>{supplier.contacto}</TableCell>
+                    <TableCell>{supplier.telefono}</TableCell>
+                    <TableCell>{supplier.direccion}</TableCell>
+                    <TableCell>
+                      {!showDisabled ? (
+                        <>
+                          <IconButton 
+                            color="primary" 
+                            onClick={() => handleEdit(supplier)}
+                          >
+                            <Edit />
+                          </IconButton>
+                          <IconButton 
+                            color="error" 
+                            onClick={() => handleDelete(supplier.idproveedor)}
+                          >
+                            <Delete />
+                          </IconButton>
+                        </>
+                      ) : (
+                        <>
+                          <IconButton 
+                            color="primary" 
+                            onClick={() => handleRestore(supplier.idproveedor)}
+                            title="Restaurar Proveedor"
+                          >
+                            <Restore />
+                          </IconButton>
+                          <IconButton 
+                            color="error" 
+                            onClick={() => handleDeletePermanently(supplier.idproveedor)}
+                            title="Eliminar Permanentemente"
+                          >
+                            <DeleteForever />
+                          </IconButton>
+                        </>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+
+        <Dialog 
+          open={open} 
+          onClose={handleClose}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle>
+            {selectedSupplier ? 'Editar Proveedor' : 'Añadir Proveedor'}
+          </DialogTitle>
+          <DialogContent>
+            <TextField
+              label="Nombre"
+              name="nombre"
+              fullWidth
+              margin="dense"
+              value={newSupplier.nombre}
+              onChange={handleChange}
+              required
+            />
+            <TextField
+              label="Contacto"
+              name="contacto"
+              fullWidth
+              margin="dense"
+              value={newSupplier.contacto}
+              onChange={handleChange}
+            />
+            <TextField
+              label="Teléfono"
+              name="telefono"
+              fullWidth
+              margin="dense"
+              value={newSupplier.telefono}
+              onChange={handleChange}
+            />
+            <TextField
+              label="Dirección"
+              name="direccion"
+              fullWidth
+              margin="dense"
+              value={newSupplier.direccion}
+              onChange={handleChange}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleClose}>Cancelar</Button>
+            <Button onClick={handleSubmit} variant="contained">
+              {selectedSupplier ? 'Actualizar' : 'Guardar'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {snackbar && (
+          <Snackbar 
+            open={true}
+            autoHideDuration={6000} 
+            onClose={handleSnackbarClose}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+          >
+            <Alert 
+              onClose={handleSnackbarClose} 
+              severity={snackbar.severity}
+              sx={{ width: '100%' }}
+            >
+              {snackbar.message}
+            </Alert>
+          </Snackbar>
+        )}
+      </Container>
+    </ClientLayout>
   );
 }

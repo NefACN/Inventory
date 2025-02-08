@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getConnection } from '@/utils/database';
 
-// Define interfaces for the database row and return types
 interface DatabaseRow {
     idcompra: number;
     fechacompra: Date;
@@ -102,7 +101,6 @@ export async function GET() {
     }
 }
 
-// Interface for POST request body
 interface PurchaseInput {
     idproveedor: number;
     productos: {

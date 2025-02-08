@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import debounce from 'lodash/debounce';
 import {
   Container,
   Paper,
@@ -17,17 +18,25 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  FormHelperText,
   TextField,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
   Fab,
-  CircularProgress
+  CircularProgress,
+  Box,
+  SelectChangeEvent ,
+  
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
+import RestoreIcon from '@mui/icons-material/Restore';
+import DeleteForeverIcon from '@mui/icons-material/DeleteForever';
+import SearchIcon from '@mui/icons-material/Search'
+import ClientLayout from "@/components/layouts/ClientLayout";
 
 type Product = {
   idproducto: number;
@@ -41,6 +50,7 @@ type Product = {
   idproveedor: number;
   categoria?: string;
   proveedor?: string;
+  estado: string;
 };
 
 type Category = {
@@ -53,14 +63,97 @@ type Provider = {
   nombre: string;
 };
 
+interface ProductValidationError {
+  field: string;
+  message: string;
+}
+
+const validateProduct = (
+  values: {
+    nombre: string;
+    descripcion?: string;
+    preciocompra: string | number;
+    precioventa: string | number;
+    stock: string | number;
+    idcategoria: string | number;
+    idproveedor: string | number;
+  }, 
+  products: Product[],
+  selectedProduct: Product | null
+): ProductValidationError[] => {
+  const errors: ProductValidationError[] = [];
+  
+  // Validación de nombre
+  if (!values.nombre.trim()) {
+    errors.push({ field: 'nombre', message: 'El nombre es requerido' });
+  } else {
+    if (values.nombre.length > 50) {
+      errors.push({ field: 'nombre', message: 'El nombre no puede exceder 50 caracteres' });
+    }
+ 
+    const isDuplicate = products.some(p => 
+      p.nombre.toLowerCase() === values.nombre.trim().toLowerCase() &&
+      (!selectedProduct || p.idproducto !== selectedProduct.idproducto)
+    );
+    if (isDuplicate) {
+      errors.push({ field: 'nombre', message: 'Ya existe un producto con este nombre' });
+    }
+  }
+
+  // Validación de precios
+  const precioCompra = Number(values.preciocompra);
+  const precioVenta = Number(values.precioventa);
+  
+  if (isNaN(precioCompra) || precioCompra <= 0) {
+    errors.push({ field: 'preciocompra', message: 'El precio de compra debe ser mayor a 0' });
+  } else if (precioCompra > 999999.99) {
+    errors.push({ field: 'preciocompra', message: 'El precio de compra no puede exceder 999,999.99' });
+  }
+
+  if (isNaN(precioVenta) || precioVenta <= 0) {
+    errors.push({ field: 'precioventa', message: 'El precio de venta debe ser mayor a 0' });
+  } else if (precioVenta > 999999.99) {
+    errors.push({ field: 'precioventa', message: 'El precio de venta no puede exceder 999,999.99' });
+  }
+
+  if (precioVenta < precioCompra) {
+    errors.push({ field: 'precioventa', message: 'El precio de venta debe ser mayor o igual al precio de compra' });
+  }
+
+  // Validación de stock
+  const stock = Number(values.stock);
+  if (isNaN(stock) || !Number.isInteger(stock)) {
+    errors.push({ field: 'stock', message: 'El stock debe ser un número entero' });
+  } else if (stock < 0) {
+    errors.push({ field: 'stock', message: 'El stock no puede ser negativo' });
+  } else if (stock > 999999) {
+    errors.push({ field: 'stock', message: 'El stock no puede exceder 999,999 unidades' });
+  }
+
+  // Validación de categoría y proveedor
+  if (!values.idcategoria) {
+    errors.push({ field: 'idcategoria', message: 'La categoría es requerida' });
+  }
+  
+  if (!values.idproveedor) {
+    errors.push({ field: 'idproveedor', message: 'El proveedor es requerido' });
+  }
+
+  return errors;
+};
+
 const ProductTable = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [formErrors, setFormErrors] = useState<ProductValidationError[]>([]);
+  const [showDisabled, setShowDisabled] = useState(false);
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [isSearching, setIsSearching] = useState(false);
 
   const initialFormState = {
     nombre: '',
@@ -73,21 +166,72 @@ const ProductTable = () => {
     fechaingreso: new Date().toISOString().split('T')[0]
   };
 
+  const getFieldError = (field: string) => {
+    return formErrors.find(error => error.field === field)?.message || '';
+  };
+
   const [formValues, setFormValues] = useState(initialFormState);
+
+  const debouncedSearch = useCallback(
+    debounce(async (term: string) => {
+      try {
+        setIsSearching(true);
+        const endpoint = showDisabled 
+          ? '/api/products/disabled' 
+          : `/api/products?q=${encodeURIComponent(term)}`;
+        
+        const response = await fetch(endpoint);
+        
+        if (!response.ok) {
+          if (showDisabled && response.status === 404) {
+            setProducts([]);
+            return;
+          }
+          throw new Error('Error al buscar productos');
+        }
+        
+        const data = await response.json();
+        setProducts(data);
+      } catch (error) {
+        console.error('Error searching products:', error);
+        if (!showDisabled) {
+          // Handle error
+        }
+        setProducts([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300), 
+    [showDisabled]
+  );
 
   const fetchProducts = async () => {
     try {
-      const response = await fetch('/api/products');
-      if (!response.ok) throw new Error('Failed to fetch products');
+      setLoading(true);
+      const endpoint = showDisabled ? '/api/products/disabled' : '/api/products';
+      const response = await fetch(endpoint);
+      
+      if (!response.ok) {
+        if (showDisabled && response.status === 404) {
+          setProducts([]);
+          setLoading(false);
+          return;
+        }
+        throw new Error('Error al obtener productos');
+      }
+      
       const data = await response.json();
       setProducts(data);
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Error fetching products');
+      if (!showDisabled) {
+        console.error(error);
+      }
+      setProducts([]);
     } finally {
       setLoading(false);
     }
   };
-
+  
   const fetchCategories = async () => {
     try {
       const response = await fetch('/api/categories');
@@ -117,7 +261,6 @@ const ProductTable = () => {
       const product = await response.json();
       setSelectedProduct(product);
       
-      // Safely handle potentially null values
       setFormValues({
         nombre: product.nombre || '',
         descripcion: product.descripcion || '',
@@ -135,10 +278,18 @@ const ProductTable = () => {
   };
 
   useEffect(() => {
-    fetchProducts();
+    return () => {
+      debouncedSearch.cancel();
+    };
+  }, [debouncedSearch]);
+
+  useEffect(() => {
+    if (!searchTerm) {
+      fetchProducts();
+    }
     fetchCategories();
     fetchProviders();
-  }, []);
+  }, [showDisabled, searchTerm]);
 
   const handleOpen = (product?: Product) => {
     if (product) {
@@ -154,18 +305,28 @@ const ProductTable = () => {
     setOpen(false);
     setSelectedProduct(null);
     setFormValues(initialFormState);
+    setFormErrors([]);
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | { name?: string; value: unknown }>) => {
-    const { name, value } = e.target as HTMLInputElement;
-    setFormValues(prev => ({
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | { name?: string; value: unknown }> | SelectChangeEvent) => {
+    const { name, value } = e.target as { name: string; value: unknown };
+  
+    setFormValues((prev) => ({
       ...prev,
-      [name as string]: value
+      [name]: value,
     }));
+  
+    setFormErrors((prev) => prev.filter((error) => error.field !== name));
   };
 
   const handleSubmit = async () => {
     try {
+      const errors = validateProduct(formValues, products, selectedProduct);
+      setFormErrors(errors);
+      if (errors.length > 0) {
+        return; 
+      }
+  
       const payload = {
         ...formValues,
         preciocompra: parseFloat(formValues.preciocompra),
@@ -174,7 +335,7 @@ const ProductTable = () => {
         idcategoria: parseInt(formValues.idcategoria),
         idproveedor: parseInt(formValues.idproveedor)
       };
-
+  
       const url = selectedProduct 
         ? `/api/products/${selectedProduct.idproducto}`
         : '/api/products';
@@ -184,19 +345,17 @@ const ProductTable = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-
+  
       if (!response.ok) {
-        throw new Error(selectedProduct 
-          ? 'Error al actualizar el producto'
-          : 'Error al crear el producto'
-        );
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Error al procesar la solicitud');
       }
-
+  
       await fetchProducts();
       handleClose();
-    } catch (error) {
+    }  catch (error) {
       console.error('Error:', error);
-      alert(error instanceof Error ? error.message : 'An error occurred');
+      alert(error instanceof Error ? error.message : 'Ha ocurrido un error');
     }
   };
 
@@ -216,6 +375,48 @@ const ProductTable = () => {
     }
   };
 
+  const handleDeletePermanently = async (id: number) => {
+    if (!window.confirm('¿Está seguro de eliminar este producto permanentemente? Esta acción no se puede deshacer.')) return;
+
+    try {
+      const response = await fetch(`/api/products/${id}?type=physical`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error('Error al eliminar producto');
+      await fetchProducts();
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : 'Error al eliminar producto');
+    }
+  };
+
+  const handleRestore = async (id: number) => {
+    if (!window.confirm('¿Está seguro de restaurar este producto?')) return;
+
+    try {
+      const response = await fetch(`/api/products/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ type: 'restore' })
+      });
+
+      if (!response.ok) throw new Error('Error al restaurar el producto');
+      await fetchProducts();
+    } catch (error) {
+      console.error('Error:', error);
+      alert(error instanceof Error ? error.message : 'An error occurred');
+    }
+  };
+
+  const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newSearchTerm = event.target.value;
+    setSearchTerm(newSearchTerm);
+    debouncedSearch(newSearchTerm);
+  };
+
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -233,58 +434,125 @@ const ProductTable = () => {
   }
 
   return (
+    <ClientLayout>
     <Container>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <Typography variant="h4">Productos</Typography>
-        <Fab 
-          color="primary" 
-          onClick={() => handleOpen()}
-          style={{ backgroundColor: '#1976d2' }}
-        >
-          <AddIcon />
-        </Fab>
+        <Typography variant="h4">
+          {showDisabled ? 'Productos Inhabilitados' : 'Productos Habilitados'}
+        </Typography>
+        {!showDisabled && (
+          <Fab 
+            color="primary" 
+            onClick={() => handleOpen()}
+            style={{ backgroundColor: '#1976d2' }}
+          >
+            <AddIcon />
+          </Fab>
+        )}
       </div>
 
-      <TableContainer component={Paper}>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Nombre</TableCell>
-              <TableCell>Descripción</TableCell>
-              <TableCell>Precio Compra</TableCell>
-              <TableCell>Precio Venta</TableCell>
-              <TableCell>Stock</TableCell>
-              <TableCell>Categoría</TableCell>
-              <TableCell>Proveedor</TableCell>
-              <TableCell>Acciones</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {products.map((product) => (
-              <TableRow key={product.idproducto}>
-                <TableCell>{product.idproducto}</TableCell>
-                <TableCell>{product.nombre}</TableCell>
-                <TableCell>{product.descripcion}</TableCell>
-                <TableCell>${Number(product.preciocompra).toFixed(2)}</TableCell>
-                <TableCell>${Number(product.precioventa).toFixed(2)}</TableCell>
-                <TableCell>{product.stock}</TableCell>
-                <TableCell>{product.categoria}</TableCell>
-                <TableCell>{product.proveedor}</TableCell>
-                <TableCell>
-                  <IconButton onClick={() => handleOpen(product)} color="primary">
-                    <EditIcon />
-                  </IconButton>
-                  <IconButton onClick={() => handleDelete(product.idproducto)} color="error">
-                    <DeleteIcon />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
+          <Button 
+            variant="outlined" 
+            color="primary" 
+            onClick={() => setShowDisabled(!showDisabled)}
+          >
+            {showDisabled ? 'Ver Habilitados' : 'Ver Inhabilitados'}
+          </Button>
 
+          <TextField
+            placeholder="Buscar productos..."
+            variant="outlined"
+            size="small"
+            value={searchTerm}
+            onChange={handleSearchChange}
+            InputProps={{
+              startAdornment: <SearchIcon sx={{ color: 'action.active', mr: 1 }} />,
+              endAdornment: isSearching ? (
+                <CircularProgress size={20} sx={{ mr: 1 }} />
+              ) : null
+            }}
+            sx={{ minWidth: 300 }}
+          />
+        </Box>
+
+      {products.length === 0 ? (
+        <Box 
+          display="flex" 
+          justifyContent="center" 
+          alignItems="center" 
+          height="200px" 
+          bgcolor="background.default" 
+          borderRadius={2}
+        >
+          <Typography variant="h6" color="textSecondary">
+            {showDisabled 
+              ? 'No hay productos inhabilitados' 
+              : 'No hay productos disponibles'}
+          </Typography>
+        </Box>
+      ) : (
+        <TableContainer component={Paper}>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>ID</TableCell>
+                <TableCell>Nombre</TableCell>
+                <TableCell>Descripción</TableCell>
+                <TableCell>Precio Compra</TableCell>
+                <TableCell>Precio Venta</TableCell>
+                <TableCell>Stock</TableCell>
+                <TableCell>Categoría</TableCell>
+                <TableCell>Proveedor</TableCell>
+                <TableCell>Acciones</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {products.map((product) => (
+                <TableRow key={product.idproducto}>
+                  <TableCell>{product.idproducto}</TableCell>
+                  <TableCell>{product.nombre}</TableCell>
+                  <TableCell>{product.descripcion}</TableCell>
+                  <TableCell>{Number(product.preciocompra).toFixed(2)} Bs</TableCell>
+                  <TableCell>{Number(product.precioventa).toFixed(2)} Bs</TableCell>
+                  <TableCell>{product.stock}</TableCell>
+                  <TableCell>{product.categoria}</TableCell>
+                  <TableCell>{product.proveedor}</TableCell>
+                  <TableCell>
+                    {!showDisabled ? (
+                      <>
+                        <IconButton onClick={() => handleOpen(product)} color="primary">
+                          <EditIcon />
+                        </IconButton>
+                        <IconButton onClick={() => handleDelete(product.idproducto)} color="error">
+                          <DeleteIcon />
+                        </IconButton>
+                      </>
+                    ) : (
+                      <>
+                        <IconButton 
+                          onClick={() => handleRestore(product.idproducto)} 
+                          color="primary"
+                          title="Restaurar Producto"
+                        >
+                          <RestoreIcon />
+                        </IconButton>
+                        <IconButton 
+                          onClick={() => handleDeletePermanently(product.idproducto)} 
+                          color="error"
+                          title="Eliminar Permanentemente"
+                        >
+                          <DeleteForeverIcon />
+                        </IconButton>
+                      </>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+        </Table>
+    </TableContainer>
+    )}
       <Dialog 
         open={open} 
         onClose={handleClose}
@@ -303,6 +571,8 @@ const ProductTable = () => {
               onChange={handleChange}
               fullWidth
               required
+              error={!!getFieldError('nombre')}
+              helperText={getFieldError('nombre')}
             />
             <TextField
               label="Descripción"
@@ -312,6 +582,8 @@ const ProductTable = () => {
               fullWidth
               multiline
               rows={3}
+              error={!!getFieldError('descripcion')}
+              helperText={getFieldError('descripcion')}
             />
             <TextField
               label="Precio Compra"
@@ -321,6 +593,9 @@ const ProductTable = () => {
               onChange={handleChange}
               fullWidth
               required
+              error={!!getFieldError('preciocompra')}
+              helperText={getFieldError('preciocompra')}
+              inputProps={{ step: "0.01" }}
             />
             <TextField
               label="Precio Venta"
@@ -330,6 +605,9 @@ const ProductTable = () => {
               onChange={handleChange}
               fullWidth
               required
+              error={!!getFieldError('precioventa')}
+              helperText={getFieldError('precioventa')}
+              inputProps={{ step: "0.01" }}
             />
             <TextField
               label="Stock"
@@ -339,8 +617,14 @@ const ProductTable = () => {
               onChange={handleChange}
               fullWidth
               required
+              error={!!getFieldError('stock')}
+              helperText={getFieldError('stock')}
+              inputProps={{ step: "1" }}
             />
-            <FormControl fullWidth>
+            <FormControl 
+              fullWidth 
+              error={!!getFieldError('idcategoria')}
+            >
               <InputLabel>Categoría</InputLabel>
               <Select
                 name="idcategoria"
@@ -354,8 +638,16 @@ const ProductTable = () => {
                   </MenuItem>
                 ))}
               </Select>
+              {getFieldError('idcategoria') && (
+                <FormHelperText error>
+                  {getFieldError('idcategoria')}
+                </FormHelperText>
+              )}
             </FormControl>
-            <FormControl fullWidth>
+            <FormControl 
+              fullWidth
+              error={!!getFieldError('idproveedor')}
+            >
               <InputLabel>Proveedor</InputLabel>
               <Select
                 name="idproveedor"
@@ -369,6 +661,11 @@ const ProductTable = () => {
                   </MenuItem>
                 ))}
               </Select>
+              {getFieldError('idproveedor') && (
+                <FormHelperText error>
+                  {getFieldError('idproveedor')}
+                </FormHelperText>
+              )}
             </FormControl>
           </div>
         </DialogContent>
@@ -376,12 +673,18 @@ const ProductTable = () => {
           <Button onClick={handleClose} color="inherit">
             Cancelar
           </Button>
-          <Button onClick={handleSubmit} color="primary" variant="contained">
+          <Button 
+            onClick={handleSubmit} 
+            color="primary" 
+            variant="contained"
+            disabled={formErrors.length > 0}
+          >
             {selectedProduct ? 'Actualizar' : 'Crear'}
           </Button>
         </DialogActions>
       </Dialog>
     </Container>
+    </ClientLayout>
   );
 };
 

@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import {getConnection} from '@/utils/database';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
     try {
+        const searchParams = req.nextUrl.searchParams;
+        const query = searchParams.get("q") || "";
+
         const connection = await getConnection();
-        const result = await connection.query(`
+        const result = await connection.query(
+            `
             SELECT 
                 p.idproducto,
                 p.nombre,
@@ -18,16 +22,24 @@ export async function GET() {
             FROM productos p
             LEFT JOIN categorias c ON p.idcategoria = c.idcategoria
             LEFT JOIN proveedores pr ON p.idproveedor = pr.idproveedor
-            WHERE p.habilitado = TRUE;
-        `);
+            WHERE p.habilitado = TRUE
+            AND (
+                p.nombre ILIKE $1 OR
+                p.descripcion ILIKE $1 OR
+                c.nombre ILIKE $1 OR
+                pr.nombre ILIKE $1
+            )
+            ORDER BY p.nombre ASC
+            `,
+            [`%${query}%`] 
+        );
 
-        // Formateamos los datos para el frontend
         const products = result.rows.map(row => ({
             idproducto: row.idproducto || null,
             nombre: row.nombre || 'Sin Nombre',
             descripcion: row.descripcion || 'Sin Descripción',
-            preciocompra: parseFloat(row.preciocompra) || 0, // Asegúrate de que sea número
-            precioventa: parseFloat(row.precioventa) || 0,   // Asegúrate de que sea número
+            preciocompra: parseFloat(row.preciocompra) || 0, 
+            precioventa: parseFloat(row.precioventa) || 0,   
             stock: row.stock || 0,
             fechaingreso: row.fechaingreso || null,
             categoria: row.categoria || 'Sin Categoría',

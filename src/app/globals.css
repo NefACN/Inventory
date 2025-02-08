@@ -40,3 +40,30 @@ a {
     color-scheme: dark;
   }
 }
+
+/* Estilo para exportar a PDF */
+#report-content {
+  font-size: 12px; /* Tamaño de fuente general */
+  line-height: 1.6; /* Espaciado entre líneas */
+  padding: 20px; /* Márgenes internos */
+  width: 100%;
+  max-width: 750px; /* Ancho máximo para hoja tamaño carta */
+  margin: auto; /* Centrar el contenido */
+}
+
+#report-content table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#report-content th,
+#report-content td {
+  padding: 8px;
+  border: 1px solid #ddd; /* Bordes de celdas */
+  text-align: left;
+}
+
+#report-content th {
+  background-color: #f5f5f5; /* Fondo de encabezados */
+  font-weight: bold;
+}

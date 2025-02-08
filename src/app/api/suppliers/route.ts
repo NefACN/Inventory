@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import {getConnection} from '@/utils/database';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
     try{
+        const searchParams = req.nextUrl.searchParams;
+        const query = searchParams.get("q") || "";
+
         const connection = await getConnection();
-        const result = await connection.query("SELECT * FROM proveedores WHERE habilitado = TRUE");
+        let result;
+        if(query.length>0){
+            result = await connection.query(
+                "SELECT * FROM proveedores WHERE habilitado = TRUE AND nombre ILIKE $1 LIMIT 10",
+                [`%${query}%`]
+            );
+        } else {
+            result = await connection.query("SELECT * FROM proveedores WHERE habilitado = TRUE");
+        }
         return NextResponse.json(result.rows, {status: 200});
     }catch(error){
         console.error("Error fetching suppliers: ",error);

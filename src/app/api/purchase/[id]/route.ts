@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getConnection } from '@/utils/database';
 
-// Types for better type safety
 interface PurchaseProduct {
     idproducto: number;
     nombre: string;
@@ -122,7 +121,6 @@ export async function PUT(
         const body = await req.json();
         const { idproveedor, productos, fechacompra } = body;
 
-        // Validate input
         if (!idproveedor || !productos || !Array.isArray(productos) || productos.length === 0) {
             return NextResponse.json(
                 { message: "Datos de compra inválidos" },
@@ -130,7 +128,6 @@ export async function PUT(
             );
         }
 
-        // Verify purchase exists and is enabled
         const purchaseExists = await connection.query(
             'SELECT idcompra FROM compras WHERE idcompra = $1 AND habilitado = TRUE',
             [params.id]
@@ -143,7 +140,6 @@ export async function PUT(
             );
         }
 
-        // Verify provider exists
         const providerExists = await connection.query(
             'SELECT idproveedor FROM proveedores WHERE idproveedor = $1 AND habilitado = TRUE',
             [idproveedor]
@@ -156,7 +152,6 @@ export async function PUT(
             );
         }
 
-        // Revert previous stock changes
         const previousProducts = await connection.query(
             'SELECT idproducto, cantidad FROM compras_productos WHERE idcompra = $1',
             [params.id]
@@ -169,19 +164,16 @@ export async function PUT(
             );
         }
 
-        // Delete previous purchase products
         await connection.query(
             'DELETE FROM compras_productos WHERE idcompra = $1',
             [params.id]
         );
 
-        // Calculate new total
         let total = 0;
         for (const product of productos) {
             total += (product.cantidad * product.precio_unitario);
         }
 
-        // Update purchase
         await connection.query(
             `UPDATE compras 
              SET idproveedor = $1, fechacompra = $2, total = $3
@@ -189,7 +181,6 @@ export async function PUT(
             [idproveedor, fechacompra, total, params.id]
         );
 
-        // Insert new purchase products and update stock
         for (const product of productos) {
             const productExists = await connection.query(
                 'SELECT idproducto FROM productos WHERE idproducto = $1 AND habilitado = TRUE',
@@ -213,7 +204,6 @@ export async function PUT(
 
         await connection.query('COMMIT');
 
-        // Fetch updated purchase
         const result = await connection.query(`
             SELECT 
                 c.idcompra,
@@ -257,7 +247,6 @@ export async function DELETE(
     await connection.query('BEGIN');
 
     try {
-        // Verify purchase exists and is enabled
         const purchaseExists = await connection.query(
             'SELECT idcompra FROM compras WHERE idcompra = $1 AND habilitado = TRUE',
             [params.id]
@@ -270,7 +259,6 @@ export async function DELETE(
             );
         }
 
-        // Revert stock changes
         const products = await connection.query(
             'SELECT idproducto, cantidad FROM compras_productos WHERE idcompra = $1',
             [params.id]
@@ -283,7 +271,6 @@ export async function DELETE(
             );
         }
 
-        // Soft delete the purchase
         await connection.query(
             'UPDATE compras SET habilitado = FALSE WHERE idcompra = $1',
             [params.id]

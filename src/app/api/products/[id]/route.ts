@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getConnection } from "@/utils/database";
 
-// Handler para obtener un producto por ID
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
     try {
       const connection = await getConnection();
-      const { id } = params;
-  
-      // Update the query to include JOIN with categories and providers
+      const { id } = await params;
       const query = `
         SELECT 
           p.*,
@@ -28,7 +25,6 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         );
       }
   
-      // Format the response data
       const product = result.rows[0];
       return NextResponse.json({
         idproducto: product.idproducto,
@@ -52,10 +48,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     }
   }
 
-// Handler para actualizar un producto
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
     try {
-      const connection = await getConnection(); // Add await here
+      const connection = await getConnection(); 
       const body = await req.json();
   
       const {
@@ -69,7 +64,6 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         idproveedor,
       } = body;
   
-      // Add validation for required fields
       if (!nombre || !preciocompra || !precioventa) {
         return NextResponse.json(
           { message: "Required fields are missing" },
@@ -77,7 +71,6 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         );
       }
   
-      // Validate that category and provider exist
       const categoryExists = await connection.query(
         "SELECT idcategoria FROM categorias WHERE idcategoria = $1",
         [idcategoria]
@@ -95,7 +88,6 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         );
       }
 
-      // Update query
       const query = `
         UPDATE productos SET 
         nombre = $1, 
@@ -118,7 +110,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         fechaingreso || new Date().toISOString().split('T')[0],
         idcategoria,
         idproveedor,
-        params.id // Use params.id directly
+        params.id 
       ];
   
       const result = await connection.query(query, values);
@@ -130,7 +122,6 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
         );
       }
   
-      // Return updated product with category and provider names
       const updatedProduct = await connection.query(`
         SELECT 
           p.*,
@@ -152,22 +143,50 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     }
 }  
 
-// Handler para eliminar (deshabilitar) un producto
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const connection = getConnection();
-    const { id } = params;
+    const connection = await getConnection();
+    const { id } = await params;
 
-    const query = "UPDATE productos SET habilitado = FALSE WHERE idproducto = $1 RETURNING *";
-    const result = await connection.query(query, [id]);
+    const url = new URL(req.url);
+    const deleteType = url.searchParams.get('type') || 'logical';
+    const body = await req.json().catch(() => ({}));
 
-    if (result.rowCount === 0) {
-      return NextResponse.json({ message: "Product not found" }, { status: 404 });
+    if (body.type === 'restore') {
+      const restoreQuery = "UPDATE productos SET habilitado = TRUE WHERE idproducto = $1 RETURNING *";
+      const result = await connection.query(restoreQuery, [id]);
+      
+      if (result.rowCount === 0) {
+        return NextResponse.json({ message: "Product not found" }, { status: 404 });
+      }
+      
+      return NextResponse.json(result.rows[0]);
     }
 
-    return NextResponse.json(result.rows[0]);
+    if (deleteType === 'logical') {
+      const query = "UPDATE productos SET habilitado = FALSE WHERE idproducto = $1 RETURNING *";
+      const result = await connection.query(query, [id]);
+      if (result.rowCount === 0) {
+        return NextResponse.json({ message: "Product not found" }, { status: 404 });
+      }
+      return NextResponse.json(result.rows[0]);
+    } else if (deleteType === 'physical') {
+      const query = "DELETE FROM productos WHERE idproducto = $1 RETURNING *";
+      const result = await connection.query(query, [id]);
+
+      if (result.rowCount === 0) {
+        return NextResponse.json({ message: "Product not found" }, { status: 404 });
+      }
+
+      return NextResponse.json({ message: "Product deleted permanently", data: result.rows[0] });
+    } else {
+      return NextResponse.json(
+        { message: "Invalid delete type. Use 'logical', 'physical', or 'restore'." },
+        { status: 400 }
+      );
+    }
   } catch (error: unknown) {
-    console.error("Error deleting product:", error);
+    console.error("Error processing product:", error);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });
   }
 }

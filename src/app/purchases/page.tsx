@@ -23,7 +23,9 @@ import {
   IconButton,
   Paper,
   Snackbar,
-  Alert
+  Alert,
+  Box,
+  CircularProgress
 } from '@mui/material';
 import { 
   Delete as DeleteIcon,
@@ -31,6 +33,7 @@ import {
   ShoppingBag as ShoppingBagIcon 
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import ClientLayout from "@/components/layouts/ClientLayout";
 
 // Types
 interface Provider {
@@ -65,11 +68,11 @@ interface Purchase {
 }
 
 export default function PurchasePage() {
-  // States
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>("");
   const [purchaseProducts, setPurchaseProducts] = useState<{
     idproducto: string;
@@ -83,51 +86,63 @@ export default function PurchasePage() {
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
-    severity: 'success' | 'error';
+    severity: 'success' | 'error' | 'warning';
   }>({ open: false, message: '', severity: 'success' });
 
-  // Fetch initial data
-  useEffect(() => {
-    fetchPurchases();
-    fetchProviders();
-    fetchProducts();
-  }, []);
-
-  // Fetch functions
   const fetchPurchases = async () => {
     try {
+      setIsLoading(true);
       const response = await fetch('/api/purchase');
-      if (!response.ok) throw new Error('Error fetching purchases');
+      if (!response.ok) throw new Error('Error al procesar la solicitud');
       const data = await response.json();
       setPurchases(data);
-    } catch (error) {
-      console.error('Error al cargar las compras', error);
+    } catch {
+      setSnackbar({
+        open: true,
+        message: 'No se pudieron cargar las compras. Por favor, intente nuevamente.',
+        severity: 'error'
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const fetchProviders = async () => {
+ const fetchProviders = async () => {
     try {
       const response = await fetch('/api/suppliers');
-      if (!response.ok) throw new Error('Error fetching providers');
+      if (!response.ok) throw new Error('Error al procesar la solicitud');
       const data = await response.json();
       setProviders(data);
-    } catch (error) {
-      console.error('Error al cargar los proveedores', error);
+    } catch {
+      setSnackbar({
+        open: true,
+        message: 'No se pudieron cargar los proveedores. Por favor, intente nuevamente.',
+        severity: 'error'
+      });
     }
   };
 
   const fetchProducts = async () => {
     try {
       const response = await fetch('/api/products');
-      if (!response.ok) throw new Error('Error fetching products');
+      if (!response.ok) throw new Error('Error al procesar la solicitud');
       const data = await response.json();
       setProducts(data);
-    } catch (error) {
-      console.error('Error al cargar los productos', error);
+    } catch {
+      setSnackbar({
+        open: true,
+        message: 'No se pudieron cargar los productos. Por favor, intente nuevamente.',
+        severity: 'error'
+      });
     }
   };
 
-  // Handle form changes
+  useEffect(() => {
+    fetchPurchases();
+    fetchProviders();
+    fetchProducts();
+  }, []);
+
   const handleAddProduct = () => {
     setPurchaseProducts([
       ...purchaseProducts,
@@ -141,10 +156,28 @@ export default function PurchasePage() {
 
   const handleProductChange = (index: number, field: string, value: string | number) => {
     const updatedProducts = [...purchaseProducts];
-    updatedProducts[index] = {
-      ...updatedProducts[index],
-      [field]: value,
-    };
+    
+    if (field === 'cantidad') {
+      const parsedQuantity = parseInt(value.toString());
+      updatedProducts[index] = {
+        ...updatedProducts[index],
+        // Ensure quantity is at least 1
+        cantidad: isNaN(parsedQuantity) || parsedQuantity < 1 ? 1 : parsedQuantity,
+      };
+    } 
+    else if (field === 'precio_unitario') {
+      const parsedPrice = parseFloat(value.toString());
+      updatedProducts[index] = {
+        ...updatedProducts[index],
+        precio_unitario: isNaN(parsedPrice) ? 0 : Math.max(0, parsedPrice),
+      };
+    }
+    else {
+      updatedProducts[index] = {
+        ...updatedProducts[index],
+        [field]: value,
+      };
+    }
     
     if (field === 'idproducto') {
       const selectedProduct = products.find(p => p.idproducto.toString() === value);
@@ -156,21 +189,40 @@ export default function PurchasePage() {
     setPurchaseProducts(updatedProducts);
   };
 
-  // Calculate total
+  // Calcular total
   const calculateTotal = () => {
     return purchaseProducts.reduce((total, product) => {
-      return total + (product.cantidad * product.precio_unitario);
+      const cantidad = Math.max(1, product.cantidad);
+      const precioUnitario = Math.max(0, product.precio_unitario);
+      return total + (cantidad * precioUnitario);
     }, 0);
   };
 
-  // Show snackbar
-  const showSnackbar = (message: string, severity: 'success' | 'error') => {
-    setSnackbar({ open: true, message, severity });
-  };
-
-  // Handle purchase creation
   const handleCreatePurchase = async () => {
+    if (!selectedProvider) {
+      setSnackbar({
+        open: true,
+        message: 'Por favor, seleccione un proveedor',
+        severity: 'warning'
+      });
+      return;
+    }
+  
+    const invalidProducts = purchaseProducts.filter(p => 
+      !p.idproducto || p.cantidad < 1 || p.precio_unitario < 0
+    );
+  
+    if (invalidProducts.length > 0) {
+      setSnackbar({
+        open: true,
+        message: 'Por favor, verifique los datos de los productos ingresados',
+        severity: 'warning'
+      });
+      return;
+    }
+  
     try {
+      setIsLoading(true);
       const purchase = {
         idproveedor: parseInt(selectedProvider),
         productos: purchaseProducts.map(p => ({
@@ -179,31 +231,41 @@ export default function PurchasePage() {
           precio_unitario: p.precio_unitario
         }))
       };
-
+  
       const response = await fetch('/api/purchase', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(purchase),
       });
-
-      if (!response.ok) throw new Error('Error creating purchase');
-
-      showSnackbar('Compra creada exitosamente', 'success');
+  
+      if (!response.ok) throw new Error('Error al procesar la solicitud');
+  
+      setSnackbar({
+        open: true,
+        message: 'Compra registrada exitosamente',
+        severity: 'success'
+      });
       setIsDialogOpen(false);
       resetForm();
       fetchPurchases();
-    } catch (error) {
-      console.error('Error al crear la compra',error);
+    } catch {
+      setSnackbar({
+        open: true,
+        message: 'No se pudo registrar la compra. Por favor, intente nuevamente.',
+        severity: 'error'
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // Reset form
   const resetForm = () => {
     setSelectedProvider("");
     setPurchaseProducts([{ idproducto: "", cantidad: 1, precio_unitario: 0 }]);
   };
 
   return (
+    <ClientLayout>
     <div style={{ padding: '2rem' }}>
       <Card>
         <CardHeader
@@ -213,12 +275,18 @@ export default function PurchasePage() {
               variant="contained"
               startIcon={<AddIcon />}
               onClick={() => setIsDialogOpen(true)}
+              disabled={isLoading}
             >
               Nueva Compra
             </Button>
           }
         />
         <CardContent>
+          {isLoading ? (
+              <Box display="flex" justifyContent="center" p={3}>
+                <CircularProgress />
+              </Box>
+          ) : (
           <TableContainer>
             <Table>
               <TableHead>
@@ -250,17 +318,17 @@ export default function PurchasePage() {
                       </Button>
                     </TableCell>
                     <TableCell align="right">
-                      ${purchase.total.toFixed(2)}
+                      {purchase.total.toFixed(2)} Bs
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </TableContainer>
+          )}
         </CardContent>
       </Card>
 
-      {/* New Purchase Dialog */}
       <Dialog 
         open={isDialogOpen} 
         onClose={() => setIsDialogOpen(false)}
@@ -348,7 +416,7 @@ export default function PurchasePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
               <Typography variant="h6">Total:</Typography>
               <Typography variant="h6">
-                ${calculateTotal().toFixed(2)}
+                {calculateTotal().toFixed(2)} Bs
               </Typography>
             </div>
 
@@ -365,7 +433,14 @@ export default function PurchasePage() {
               <Button
                 variant="contained"
                 onClick={handleCreatePurchase}
-                disabled={!selectedProvider || purchaseProducts.some(p => !p.idproducto)}
+                disabled={
+                  !selectedProvider || 
+                  purchaseProducts.some(p => 
+                    !p.idproducto || 
+                    p.cantidad < 1 || 
+                    p.precio_unitario < 0
+                  )
+                }
               >
                 Crear Compra
               </Button>
@@ -374,7 +449,6 @@ export default function PurchasePage() {
         </DialogContent>
       </Dialog>
 
-      {/* Product Details Dialog */}
       <Dialog
         open={productDetailsDialog.open}
         onClose={() => setProductDetailsDialog({ open: false, products: [] })}
@@ -398,9 +472,9 @@ export default function PurchasePage() {
                   <TableRow key={product.idproducto}>
                     <TableCell>{product.nombre}</TableCell>
                     <TableCell>{product.cantidad}</TableCell>
-                    <TableCell>${product.precio_unitario.toFixed(2)}</TableCell>
+                    <TableCell>{product.precio_unitario.toFixed(2)} Bs</TableCell>
                     <TableCell align="right">
-                      ${product.subtotal.toFixed(2)}
+                      {product.subtotal.toFixed(2)} Bs
                     </TableCell>
                   </TableRow>
                 ))}
@@ -410,19 +484,21 @@ export default function PurchasePage() {
         </DialogContent>
       </Dialog>
 
-      {/* Snackbar for notifications */}
       <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-      >
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+        >
         <Alert 
           onClose={() => setSnackbar({ ...snackbar, open: false })} 
           severity={snackbar.severity}
+          variant="filled"
+          elevation={6}
         >
           {snackbar.message}
         </Alert>
       </Snackbar>
     </div>
+    </ClientLayout>
   );
 }
